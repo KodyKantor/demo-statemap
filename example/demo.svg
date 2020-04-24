@@ -1,0 +1,2152 @@
+<?xml version="1.0"?>
+            <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+                "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+            <svg width="1250" height="315"
+                xmlns="http://www.w3.org/2000/svg"
+                version="1.1"
+                onload="init(evt)">
+<defs>
+<script type="application/ecmascript"><![CDATA[
+var globals = {
+  "stripHeight": 10,
+  "legendWidth": 138,
+  "tagWidth": 250,
+  "stripWidth": 862,
+  "background": "#f0f0f0",
+  "sortby": null,
+  "stacksortby": null,
+  "begin": 0,
+  "end": 0,
+  "entityPrefix": "statemap-entity-",
+  "pixelHeight": 30,
+  "pixelWidth": 862,
+  "totalHeight": 315,
+  "timeWidth": 6101717000,
+  "lmargin": 138,
+  "tmargin": 60,
+  "smargin": 10,
+  "states": [
+    {
+      "name": "receiving",
+      "value": 0,
+      "color": "red"
+    },
+    {
+      "name": "slow",
+      "value": 1,
+      "color": "orange"
+    },
+    {
+      "name": "waiting",
+      "value": 2,
+      "color": "yellow"
+    },
+    {
+      "name": "faster",
+      "value": 3,
+      "color": "blue"
+    },
+    {
+      "name": "fastest",
+      "value": 4,
+      "color": "green"
+    },
+    {
+      "name": "creating statemap",
+      "value": 5,
+      "color": null
+    }
+  ],
+  "start": [
+    1587748394,
+    9728000
+  ],
+  "entityKind": "Entity",
+}
+/*
+ * Copyright 2018, Joyent, Inc.
+ */
+
+/*
+ * This file is dropped into the generated SVG -- and if you're looking at
+ * the generated SVG and wondering where this comes from, look for
+ * statemap-svg.js in statemap's src directory.
+ */
+
+var g_transMatrix = [1, 0, 0, 1, 0, 0];		/* transform of statemap */
+var g_svgDoc;					/* our SVG document */
+var g_offset;					/* x offset of statemap */
+var g_timelabel;				/* label for time spanned */
+var g_timebar;					/* timebar, if any */
+var g_statebar;					/* statebar, if any */
+var g_height;					/* pixel height of statemap */
+var g_width;					/* pixel width of statemap */
+var g_statesel;					/* state selection, if any */
+var g_tagsel;					/* tag selection, if any */
+var g_tagvalsel;				/* tag val selection, if any */
+
+var g_statemaps = [];				/* array of statemaps */
+
+var timeunits = function (timeval)
+{
+	var i, rem;
+	var suffixes = [ 'ns', 'μs', 'ms', 's' ];
+
+	if (timeval === 0)
+		return ('0');
+
+	for (i = 0; (timeval > 1000 || timeval < -1000) &&
+	    i < suffixes.length - 1; i++)
+		timeval /= 1000;
+
+	rem = Math.floor((timeval - Math.floor(timeval)) * 1000);
+
+	return (Math.floor(timeval) + '.' +
+	    (rem < 100 ? '0' : '') + (rem < 10 ? '0' : '') + rem +
+	    suffixes[i]);
+};
+
+var timeFromMapX = function (mapX)
+{
+	var base, offs;
+	var timeWidth = globals.timeWidth;
+
+	/*
+	 * Our base (in nanoseconds) is our X offset in the transformation
+	 * matrix as a ratio of our total (scaled) width, times our timeWidth.
+	 */
+	base = (-g_transMatrix[4] / (g_transMatrix[0] * g_width)) * timeWidth;
+
+	/*
+	 * Our offset (in nanoseconds) is the X offset within the statemap
+	 * as a ratio of the statemap width, times the number of nanoseconds
+	 * visible in the statemap (which itself is the timeWidth divided by
+	 * our scaling factor).
+	 */
+	offs = (mapX / g_width) * (timeWidth / g_transMatrix[0]);
+
+	return (base + offs);
+};
+
+var timeToMapX = function (time)
+{
+	/*
+	 * We take the ratio of the time of the timebar of the total time
+	 * width times the width times the scale, and then add that to the
+	 * X offset in the transformation matrix.
+	 */
+	return (((time / globals.timeWidth) * g_width *
+	    g_transMatrix[0]) + g_transMatrix[4]);
+};
+
+var timeToText = function (time)
+{
+	var t;
+
+	if (g_transMatrix[0] === 1 && globals.begin === 0) {
+		t = 'offset = ' + timeunits(time);
+	} else {
+		t = 'offset = ' + timeunits(time) + ', ' +
+		    timeunits(time + globals.begin) + ' overall';
+	}
+
+	if (globals.start) {
+		var s = globals.start[0] +
+		    (time + globals.start[1]) / 1000000000;
+
+		t += ' (Epoch + ' + Math.floor(s) + 's)';
+	}
+
+	return (t);
+};
+
+var timeSetSpanLabel = function ()
+{
+	var t = 'span = ' + timeunits(globals.timeWidth / g_transMatrix[0]);
+
+	if (g_transMatrix[0] != 1 || globals.begin !== 0)
+		t += '; ' + timeToText(timeFromMapX(0));
+
+	g_timelabel.textContent = t;
+};
+
+var initStatemap = function (statemap, elem, position)
+{
+	var i, highlight;
+	var prefix = globals.entityPrefix + statemap + '-';
+
+	g_statemaps[statemap].elem = elem;
+	g_statemaps[statemap].position = position;
+	g_statemaps[statemap].nentities = 0;
+
+	/*
+	 * Iterate over this statemap's children, looking for entities.
+	 */
+	for (i = 0; i < elem.childNodes.length; i++) {
+		var id = elem.childNodes[i].id, entity;
+
+		if (!id || id.indexOf(prefix) !== 0)
+			continue;
+
+		entity = {
+			name: id.substr(prefix.length),
+			element: elem.childNodes[i],
+			position: position++,
+			statemap: statemap
+		};
+
+		entity.description =
+		    g_statemaps[statemap].entities[entity.name].description;
+
+		g_entities[id] = entity;
+		g_statemaps[statemap].nentities++;
+	}
+
+	/*
+	 * Determine the legend that this statemap is using.
+	 */
+	for (i = statemap; i >= 0; i--) {
+		if (g_svgDoc.getElementById('statemap-legend-' + i + '-0')) {
+			g_statemaps[statemap].legend = i;
+			break;
+		}
+	}
+
+	console.assert(i >= 0);
+
+	/*
+	 * Dynamically change the styling of the highlight rectangle.
+	 */
+	highlight = g_svgDoc.getElementById('statemap-' +
+	    statemap + '-highlight');
+	highlight.classList.add('statemap-highlight');
+
+	return (position);
+};
+
+var init = function (evt)
+{
+	var i = 0, position = 0, statemap;
+
+	g_svgDoc = evt.target.ownerDocument;
+	g_entities = [];
+
+	while ((statemap = g_svgDoc.getElementById('statemap-' + i)) != null)
+		position = initStatemap(i++, statemap, position);
+
+	g_height = globals.pixelHeight;
+	g_width = globals.pixelWidth;
+
+	g_offset = evt.target.getAttributeNS(null, 'width') -
+	    (g_width + globals.tagWidth);
+
+	g_timelabel = g_svgDoc.getElementById('statemap-timelabel');
+	timeSetSpanLabel();
+
+	g_timebar = undefined;
+};
+
+var entityForEachDatum = function (entity, time, etime, func)
+{
+	var data = g_statemaps[entity.statemap].data[entity.name];
+
+	var idx, length = data.length;
+	var floor = 0;
+	var ceil = length;
+	var datum, t, span;
+
+	if (length === 0 || (data[0].t > time && !etime))
+		return;
+
+	if (data[0].t > time) {
+		idx = 0;
+	} else {
+		/*
+		 * Binary search our data until we find a datum that contains
+		 * the start of our time range.
+		 */
+		for (;;) {
+			idx = floor + Math.floor((ceil - floor) / 2);
+
+			if (data[idx].t > time) {
+				ceil = idx;
+				continue;
+			}
+
+			if (idx + 1 == length || data[idx + 1].t > time)
+				break;
+
+			floor = idx;
+		}
+	}
+
+	/*
+	 * If we don't have a specified etime, we have found the datum that
+	 * contains the time; just call our function and return.
+	 */
+	if (!etime) {
+		func(data[idx], idx, 1);
+		return;
+	}
+
+	/*
+	 * Now we're going to iterate forward, calling our function until we
+	 * get past our specified etime.
+	 */
+	for (; idx < length; idx++) {
+		datum = data[idx];
+
+		if (datum.t > etime)
+			return;
+
+		if ((t = datum.t) < time)
+			t = time;
+
+		if (idx + 1 == length || data[idx + 1].t > etime) {
+			/*
+			 * This datum contains the end of the range; our span
+			 * is our etime minus this datum's start time (or our
+			 * specified time, whichever is greater).
+			 */
+			span = etime - t;
+		} else {
+			/*
+			 * The end of the datum is covered by the range; our
+			 * span is the time width of the datum.
+			 */
+			span = data[idx + 1].t - t;
+		}
+
+		func(datum, idx, span);
+	}
+};
+
+var entityDatum = function (entity, idx)
+{
+	var data = g_statemaps[entity.statemap].data[entity.name];
+	var datum = data[idx];
+	var rval = { time: datum.t };
+
+	if (datum.s instanceof Object) {
+		rval.states = datum.s;
+	} else {
+		rval.state = datum.s;
+	}
+
+	if (idx + 1 < data.length) {
+		rval.etime = data[idx + 1].t;
+	} else {
+		rval.etime = globals.timeWidth + globals.begin;
+	}
+
+	return (rval);
+};
+
+var entityBreakdown = function (entity, time, etime)
+{
+	var data = g_statemaps[entity.statemap].data[entity.name];
+	var rval = {};
+
+	var idx, length = data.length;
+	var floor = 0;
+	var ceil = length;
+	var datum, t, span, state;
+
+	time += g_statemaps[entity.statemap].offset;
+
+	if (length === 0 || data[0].t > time)
+		return ({});
+
+	/*
+	 * Binary search our data until we find a datum that contains the
+	 * specified time.
+	 */
+	for (;;) {
+		idx = floor + Math.floor((ceil - floor) / 2);
+
+		if (data[idx].t > time) {
+			ceil = idx;
+			continue;
+		}
+
+		if (idx + 1 == length || data[idx + 1].t > time)
+			break;
+
+		floor = idx;
+	}
+
+	/*
+	 * If we don't have a specified etime, we want to just return the state
+	 * breakdown at the specified time.
+	 */
+	if (!etime) {
+		datum = data[idx];
+
+		if (datum.s instanceof Object)
+			return (datum.s);
+
+		rval[datum.s] = 1.0;
+
+		return (rval);
+	}
+
+	/*
+	 * Now we're going to iterate forward until we get past our specified
+	 * etime.
+	 */
+	for (; idx < length; idx++) {
+		datum = data[idx];
+
+		if (datum.t > etime)
+			break;
+
+		if ((t = datum.t) < time)
+			t = time;
+
+		if (idx + 1 == length || data[idx + 1].t > etime) {
+			/*
+			 * This datum contains the end of the range; our span
+			 * is our etime minus this datum's start time (or our
+			 * specified time, whichever is greater).
+			 */
+			span = etime - t;
+		} else {
+			/*
+			 * The end of the datum is covered by the range; our
+			 * span is the time width of the datum.
+			 */
+			span = data[idx + 1].t - t;
+		}
+
+		/*
+		 * Express our span as a ratio of the overall time.
+		 */
+		span /= (etime - time);
+
+		if (datum.s instanceof Object) {
+			for (state in datum.s) {
+				if (!rval.hasOwnProperty(state))
+					rval[state] = 0;
+
+				rval[state] += (datum[state] * span);
+			}
+		} else {
+			state = datum.s;
+
+			if (!rval.hasOwnProperty(state))
+				rval[state] = 0;
+
+			rval[state] += span;
+		}
+	}
+
+	return (rval);
+};
+
+var statebarCreateBar = function (statebar, x1, y1, x2, y2)
+{
+	var parent = statebar.parent;
+
+	var bar = g_svgDoc.createElementNS(parent.namespaceURI, 'line');
+	bar.classList.add('statemap-statebar');
+	bar.x1.baseVal.value = x1;
+	bar.y1.baseVal.value = y1;
+	bar.x2.baseVal.value = x2;
+	bar.y2.baseVal.value = y2;
+	parent.appendChild(bar);
+	statebar.bars.push(bar);
+};
+
+var statebarCreate = function (elem, idx)
+{
+	var parent = g_statemaps[0].elem.parentNode.parentNode;
+	var statebar = { parent: parent, hidden: false };
+	var entity = g_entities[elem.parentNode.id];
+	var statemap = g_statemaps[entity.statemap];
+	var states = statemap.states;
+	var datum = entityDatum(entity, idx);
+	var pos = (entity.position * globals.stripHeight) +
+	    (entity.statemap * globals.smargin);
+	var x = globals.lmargin - 2;
+	var y = globals.tmargin + pos;
+	var elbow = { x: 8, y: 10 };
+	var nudge = { x: 3, y: 2 };
+	var direction = 1, anchor;
+	var anchors = [ 'start', 'end' ];
+	var text;
+
+	if (pos < (globals.totalHeight - globals.tmargin) / 2) {
+		direction = 1;
+		anchor = 1;
+	} else {
+		direction = -1;
+		anchor = 0;
+	}
+
+	statebar.bars = [];
+
+	/*
+	 * We have three bars to draw:  our bar that runs the height of the
+	 * strip, followed by our elbow.
+	 */
+	statebarCreateBar(statebar, x, y, x, y + globals.stripHeight);
+
+	y += 0.5 * globals.stripHeight;
+	statebarCreateBar(statebar, x - elbow.x, y, x, y);
+
+	x -= elbow.x;
+	statebarCreateBar(statebar, x, y, x, y + (elbow.y * direction));
+
+	/*
+	 * Now create the text at the end of the elbow.
+	 */
+	y += (elbow.y + nudge.y) * direction;
+	x += nudge.x;
+	text = g_svgDoc.createElementNS(parent.namespaceURI, 'text');
+	text.classList.add('sansserif');
+	text.classList.add('statemap-statetext');
+
+	var t = statemap.entityKind + ' ' + entity.name;
+
+	if (entity.description)
+		t += ' (' + entity.description + ')';
+
+	if (datum.hasOwnProperty('state')) {
+		t += ', ' + states[datum.state].name;
+	} else {
+		var i, total = 0, max = 0, maxstate;
+
+		for (i in datum.states) {
+			total += datum.states[i];
+
+			if (datum.states[i] > max) {
+				maxstate = i;
+				max = datum.states[i];
+			}
+		}
+
+		t += ', ' + Math.floor((datum.states[maxstate] / total) * 100);
+		t += '% ' + states[maxstate].name;
+	}
+
+	t += ' at ' + timeunits(datum.time);
+	t += ' for ' + timeunits(datum.etime - datum.time);
+
+	text.appendChild(g_svgDoc.createTextNode(t));
+	text.setAttributeNS(null, 'x', x);
+	text.setAttributeNS(null, 'y', y);
+	text.setAttributeNS(null, 'transform',
+	    'rotate(270,' + x + ',' + y + ')');
+	text.setAttributeNS(null, 'text-anchor', anchors[anchor]);
+	text.addEventListener('click', function () {
+		statebarRemove(statebar);
+		stateselUpdate();
+	});
+
+	parent.appendChild(text);
+	statebar.bars.push(text);
+
+	statebar.entity = entity;
+
+	if (g_statemaps.length == 1)
+		return (statebar);
+
+	/*
+	 * If we have more than one statemap, we want to add a bar to the right
+	 * side to indicate which statemap this is.
+	 */
+	var pos = (statemap.position * globals.stripHeight) +
+	    (entity.statemap * globals.smargin);
+
+	x = globals.lmargin + g_width + 2;
+	y = globals.tmargin + pos;
+
+	var pos = (statemap.position * globals.stripHeight) +
+	    (entity.statemap * globals.smargin);
+
+	var height = statemap.nentities * globals.stripHeight;
+
+	statebarCreateBar(statebar, x, y, x, y + height);
+
+	y += 0.5 * height;
+	statebarCreateBar(statebar, x + elbow.x, y, x, y);
+
+	x += elbow.x;
+	statebarCreateBar(statebar, x, y, x, y + (elbow.y * direction));
+
+	/*
+	 * Now create the text at the end of the elbow.
+	 */
+	y += (elbow.y + nudge.y) * direction;
+	x -= nudge.x;
+	text = g_svgDoc.createElementNS(parent.namespaceURI, 'text');
+	text.classList.add('sansserif');
+	text.classList.add('statemap-statetext');
+	text.appendChild(g_svgDoc.createTextNode(statemap.title));
+	text.setAttributeNS(null, 'x', x);
+	text.setAttributeNS(null, 'y', y);
+	text.setAttributeNS(null, 'transform',
+	    'rotate(90,' + x + ',' + y + ')');
+	text.setAttributeNS(null, 'text-anchor', anchors[anchor ^ 1]);
+
+	parent.appendChild(text);
+	statebar.bars.push(text);
+
+	return (statebar);
+};
+
+var statebarRemove = function (statebar)
+{
+	var i;
+
+	if (!statebar)
+		return;
+
+	if (statebar.bars) {
+		for (i = 0; i < statebar.bars.length; i++)
+			statebar.parent.removeChild(statebar.bars[i]);
+	}
+
+	statebar.bars = undefined;
+	statebar.entity = undefined;
+};
+
+var timebarRemove = function (timebar)
+{
+	if (!timebar)
+		return;
+
+	timebarRemoveSubbar(timebar);
+
+	if (timebar.bar && !timebar.hidden) {
+		timebar.parent.removeChild(timebar.bar);
+		timebar.parent.removeChild(timebar.text);
+	}
+
+	if (timebar.breakdown) {
+		var i;
+
+		for (i = 0; i < timebar.breakdown.length; i++) {
+			var elem = timebar.breakdown[i];
+			elem.parentNode.removeChild(elem);
+		}
+	}
+
+	timebar.bar = undefined;
+	timebar.text = undefined;
+	timebar.breakdown = undefined;
+};
+
+var timebarSetBarLocation = function (bar, mapX)
+{
+	var absX = mapX + g_offset;
+	var nubheight = 15;
+
+	bar.x1.baseVal.value = absX;
+	bar.y1.baseVal.value = globals.tmargin - nubheight;
+	bar.x2.baseVal.value = absX;
+	bar.y2.baseVal.value = globals.tmargin + g_height;
+};
+
+var timebarSetSubbarLocation = function (subbar, mapX, timebarX)
+{
+	var absX = mapX + g_offset, x;
+	var bar = subbar.bar;
+	var span = subbar.span;
+	var text = subbar.text;
+	var nudge = { x: 0, y: 10 };
+
+	bar.x1.baseVal.value = absX;
+	bar.y1.baseVal.value = globals.tmargin;
+	bar.x2.baseVal.value = absX;
+	bar.y2.baseVal.value = globals.tmargin + g_height;
+
+	span.x1.baseVal.value = timebarX + g_offset;
+	span.y1.baseVal.value = subbar.y;
+	span.x2.baseVal.value = absX;
+	span.y2.baseVal.value = subbar.y;
+
+	x = (timebarX < mapX ? timebarX : mapX) +
+	    Math.abs(timebarX - mapX) / 2;
+
+	text.setAttributeNS(null, 'text-anchor', 'middle');
+	text.setAttributeNS(null, 'x', x + g_offset);
+	text.setAttributeNS(null, 'y', subbar.y + nudge.y);
+};
+
+var timebarSetTextLocation = function (text, mapX)
+{
+	var absX = mapX + g_offset;
+	var nudge = { x: 3, y: 5 };
+	var direction, anchor;
+	var time;
+
+	/*
+	 * The side of the timebar that we actually render the text containing
+	 * the offset and the time depends on the location of our timebar with
+	 * respect to the center of the visible statemap.
+	 */
+	if (mapX < (g_width / 2)) {
+		direction = 1;
+		anchor = 'start';
+	} else {
+		direction = -1;
+		anchor = 'end';
+	}
+
+	text.setAttributeNS(null, 'x', absX + (direction * nudge.x));
+	text.setAttributeNS(null, 'y', globals.tmargin - nudge.y);
+	text.setAttributeNS(null, 'text-anchor', anchor);
+
+	time = timeFromMapX(mapX);
+	text.childNodes[0].textContent = timeToText(time);
+
+	return (time);
+};
+
+var timebarHideSubbar = function (timebar)
+{
+	var parent, subbar;
+
+	if (!timebar || !(subbar = timebar.subbar) || subbar.hidden)
+		return;
+
+	parent = timebar.parent;
+	parent.removeChild(subbar.bar);
+	parent.removeChild(subbar.span);
+	parent.removeChild(subbar.text);
+
+	subbar.hidden = true;
+};
+
+var timebarShowSubbar = function (timebar)
+{
+	var parent, subbar, mapX;
+
+	if (!timebar || !(subbar = timebar.subbar) || !subbar.hidden)
+		return;
+
+	mapX = timeToMapX(subbar.time)
+
+	if (mapX < 0 || mapX >= g_width)
+		return;
+
+	timebarSetSubbarLocation(subbar, mapX, timebar.x);
+
+	parent = timebar.parent;
+	parent.appendChild(subbar.bar);
+	parent.appendChild(subbar.span);
+	parent.appendChild(subbar.text);
+
+	subbar.hidden = false;
+}
+
+var timebarHide = function (timebar)
+{
+	if (!timebar || timebar.hidden || !timebar.bar)
+		return;
+
+	timebar.parent.removeChild(timebar.bar);
+	timebar.parent.removeChild(timebar.text);
+	timebar.hidden = true;
+	timebarHideSubbar(timebar);
+};
+
+var timebarShow = function (timebar)
+{
+	var mapX;
+
+	if (!timebar || !timebar.hidden)
+		return;
+
+	mapX = timeToMapX(timebar.time);
+
+	if (mapX < 0 || mapX >= g_width)
+		return;
+
+	timebarSetBarLocation(timebar.bar, mapX);
+	timebarSetTextLocation(timebar.text, mapX);
+	timebar.x = mapX;
+
+	timebar.parent.appendChild(timebar.bar);
+	timebar.parent.appendChild(timebar.text);
+	timebar.hidden = false;
+
+	timebarShowSubbar(timebar);
+};
+
+var timebarSetMiddle = function (timebar)
+{
+	var mapX = g_width / 2;
+
+	if (!timebar || !timebar.bar)
+		return;
+
+	/*
+	 * This is just an algebraic rearrangement of the mapX calculation
+	 * in timebarShow(), above.
+	 */
+	g_transMatrix[4] = -(((timebar.time / globals.timeWidth) * g_width *
+	    g_transMatrix[0]) - mapX);
+};
+
+var timebarSetBreakdown = function (time)
+{
+	var breakdown, state, total = [];
+	var entity;
+	var sum = {};
+	var rval = [];
+
+	var click = function (statemap, s) {
+		return (function (evt) { legendclick(evt, statemap, s); });
+	};
+
+	time += globals.begin;
+
+	for (entity in g_entities) {
+		var statemap = g_statemaps[g_entities[entity].statemap].legend;
+
+		breakdown = entityBreakdown(g_entities[entity], time);
+
+		if (!total[statemap]) {
+			total[statemap] = {};
+			sum[statemap] = 0;
+		}
+
+		for (state in breakdown) {
+			if (!total[statemap].hasOwnProperty(state))
+				total[statemap][state] = 0;
+
+			sum[statemap] += breakdown[state];
+			total[statemap][state] += breakdown[state];
+		}
+	}
+
+	var settotal = function (statemap, state) {
+		var legend, parent, text;
+		var x, y, width, height, t;
+		var nudge = 3;
+
+		/*
+		 * Iterate down until we find a valid legend.  We know that
+		 * that there will be at least one, but we break out of the
+		 * loop anyway if we don't find it to allow the failure mode
+		 * here to be an unreferenced property rather than an
+		 * inifinite loop.
+		 */
+		legend = g_svgDoc.getElementById('statemap-legend-' +
+		    statemap + '-' + state);
+
+		parent = legend.parentNode;
+
+		x = parseInt(legend.getAttributeNS(null, 'x'), 10);
+		y = parseInt(legend.getAttributeNS(null, 'y'), 10);
+		width = parseInt(legend.getAttributeNS(null, 'width'), 10);
+		height = parseInt(legend.getAttributeNS(null, 'height'), 10);
+
+		t = Math.floor(total[statemap][state]) + ' (' +
+		    Math.floor((total[statemap][state] /
+		    sum[statemap]) * 100) + '%)';
+
+		text = g_svgDoc.createElementNS(parent.namespaceURI, 'text');
+		text.classList.add('sansserif');
+		text.classList.add('statemap-timebreaktext');
+
+		text.appendChild(g_svgDoc.createTextNode(t));
+		text.setAttributeNS(null, 'x', x + (width / 2));
+		text.setAttributeNS(null, 'y', y + (height / 2) + nudge);
+		text.setAttributeNS(null, 'text-anchor', 'middle');
+
+		text.addEventListener('click',
+		    click(statemap, g_statemaps[statemap].states[state].value));
+
+		parent.appendChild(text);
+		rval.push(text);
+	};
+
+	for (statemap in total) {
+		for (state in total[statemap])
+			settotal(statemap, state);
+	}
+
+	return (rval);
+};
+
+var timebarCreate = function (mapX)
+{
+	var parent = g_statemaps[0].elem.parentNode.parentNode;
+	var bar, text;
+	var timebar = { parent: parent, hidden: false };
+
+	bar = g_svgDoc.createElementNS(parent.namespaceURI, 'line');
+	bar.classList.add('statemap-timebar');
+
+	timebarSetBarLocation(bar, mapX);
+	parent.appendChild(bar);
+
+	text = g_svgDoc.createElementNS(parent.namespaceURI, 'text');
+	text.classList.add('sansserif');
+	text.classList.add('statemap-timetext');
+	text.appendChild(g_svgDoc.createTextNode(''));
+
+	timebar.time = timebarSetTextLocation(text, mapX);
+	timebar.breakdown = timebarSetBreakdown(timebar.time);
+	timebar.x = mapX;
+
+	text.addEventListener('click', function () {
+		timebarRemove(timebar);
+		stateselUpdate();
+	});
+
+	parent.appendChild(text);
+
+	timebar.bar = bar;
+	timebar.text = text;
+
+	return (timebar);
+};
+
+var timebarCreateSubbar = function (timebar, mapX, absY)
+{
+	var parent = timebar.parent;
+	var subbar, bar, span, text, time, delta;
+
+	bar = g_svgDoc.createElementNS(parent.namespaceURI, 'line');
+	bar.classList.add('statemap-subbar');
+
+	span = g_svgDoc.createElementNS(parent.namespaceURI, 'line');
+	span.classList.add('statemap-subbar-span');
+
+	time = timeFromMapX(mapX);
+	delta = Math.abs(timebar.time - time);
+
+	text = g_svgDoc.createElementNS(parent.namespaceURI, 'text');
+	text.classList.add('sansserif');
+	text.classList.add('statemap-subbar-text');
+	text.appendChild(g_svgDoc.createTextNode(timeunits(delta)));
+
+	var subbar = { bar: bar, span: span, text: text,
+	    time: time, y: absY, hidden: false };
+
+	timebarSetSubbarLocation(subbar, mapX, timebar.x);
+
+	parent.appendChild(bar);
+	parent.appendChild(span);
+	parent.appendChild(text);
+
+	timebar.subbar = subbar;
+}
+
+var timebarRemoveSubbar = function (timebar)
+{
+	var subbar = timebar.subbar;
+
+	if (!subbar)
+		return;
+
+	if (!subbar.hidden) {
+		timebar.parent.removeChild(subbar.bar);
+		timebar.parent.removeChild(subbar.span);
+		timebar.parent.removeChild(subbar.text);
+	}
+
+	timebar.subbar = undefined;
+}
+
+var stateselTagvalSelect = function (evt, tagval)
+{
+	var tagdefs = {};
+	var i, entity;
+	var state, tags;
+	var child;
+	var highlight = 'statemap-tagbox-select-highlighted';
+
+	if (g_statesel == undefined)
+		return;
+
+	state = g_statesel.state;
+	tags = g_statemaps[g_statesel.statemap].tags;
+
+	if (g_tagvalsel && g_tagvalsel.selected) {
+		for (i = 0; i < g_tagvalsel.selected.length; i++) {
+			child = g_tagvalsel.selected[i];
+			child.removeAttribute('fill-opacity');
+		}
+
+		if (g_tagvalsel.element)
+			g_tagvalsel.element.classList.remove(highlight);
+
+		/*
+		 * If our selection matches the selection that we have already
+		 * made, then we are unselecting this tag value; we need only
+		 * return.
+		 */
+		if (g_tagvalsel.tag == g_tagsel.tag &&
+		    g_tagvalsel.tagval == tagval) {
+			g_tagvalsel = undefined;
+			return;
+		}
+	}
+
+	g_tagvalsel = { selected: [], tag: g_tagsel.tag, tagval: tagval };
+
+	evt.target.classList.add(highlight);
+	g_tagvalsel.element = evt.target;
+
+	/*
+	 * Iterate over all of our tag definitions, looking for a match where
+	 * the specified tag (for the specified state) matches the specified
+	 * tag value.
+	 */
+	for (i = 0; i < tags.length; i++) {
+		if (tags[i].state != state)
+			continue;
+
+		if (tags[i][g_tagsel.tag] != tagval)
+			continue;
+
+		tagdefs[i] = true;
+	}
+
+	/*
+	 * Now for each entity, we will plow through every rectangle.
+	 */
+	for (id in g_entities) {
+		var entity = g_entities[id];
+		var elem = entity.element;
+		var data = g_statemaps[entity.statemap].data[entity.name];
+		var j = 0;
+
+		for (i = 0; i < elem.childNodes.length; i++) {
+			child = elem.childNodes[i];
+
+			if (child.nodeName != 'rect')
+				continue;
+
+			var datum = data[j++];
+			var tag;
+
+			if (datum.s instanceof Object) {
+				if (!datum.s[state])
+					continue;
+			} else {
+				if (datum.s != state)
+					continue;
+			}
+
+			if (!datum.g)
+				continue;
+
+			var ratio = 0;
+
+			for (tag in datum.g) {
+				if (tagdefs[tag])
+					ratio += datum.g[tag];
+			}
+
+			if (ratio === 0)
+				continue;
+
+			/*
+			 * At this point we have found a rectangle that we
+			 * want to color, and we know the degree that we
+			 * want to color it!
+			 */
+			child.setAttributeNS(null, 'fill-opacity', 1 - ratio);
+			g_tagvalsel.selected.push(child);
+		}
+	}
+};
+
+var stateselUpdate = function ()
+{
+	var base, etime, nentities = 0;
+	var state, entity;
+	var bytag = {}, tagval;
+	var header, i, tags;
+
+	if (g_statesel == undefined)
+		return;
+
+	state = g_statesel.state;
+	tags = g_statemaps[g_statesel.statemap].tags;
+
+	var sum = function (datum, id, span) {
+		var tid, tag;
+
+		if (!(datum.s instanceof Object)) {
+			if (datum.s != state)
+				return;
+		} else {
+			var ratio;
+
+			if (!(ratio = datum.s[state]))
+				return;
+		}
+
+		if (!datum.g)
+			return;
+
+		for (tid in datum.g) {
+			tag = tags[tid];
+
+			if (tag.state != state)
+				continue;
+
+			if (!(tagval = tag[g_tagsel.tag]))
+				continue;
+
+			if (!bytag[tagval])
+				bytag[tagval] = 0;
+
+			bytag[tagval] += span * datum.g[tid];
+		}
+	};
+
+	if (!g_tagsel)
+		return;
+
+	header = '';
+
+	if (g_statebar && g_statebar.entity) {
+		header = g_statemaps[g_statesel.statemap].entityKind + ' ' +
+		    g_statebar.entity.name + ' ';
+	}
+
+	header += 'by ' + g_tagsel.tag + ' ';
+
+	if (g_timebar && g_timebar.bar) {
+		base = g_timebar.time + globals.begin;
+		etime = 0;
+		header += 'at ' + timeunits(g_timebar.time);
+	} else {
+		base = timeFromMapX(0) + globals.begin;
+		etime = timeFromMapX(g_width) + globals.begin;
+		header += 'over span';
+	}
+
+	header = header.charAt(0).toUpperCase() + header.substr(1) + ':';
+
+	if (g_statebar && g_statebar.entity) {
+		entityForEachDatum(g_statebar.entity, base, etime, sum);
+		nentities++;
+	} else {
+		/*
+		 * For each entity, we need to determine the amount of time
+		 * in our selected state.
+		 */
+		for (entity in g_entities) {
+			entityForEachDatum(g_entities[entity],
+			    base, etime, sum);
+			nentities++;
+		}
+	}
+
+	var sorted = Object.keys(bytag).sort(function (lhs, rhs) {
+		if (bytag[lhs] < bytag[rhs]) {
+			return (1);
+		} else if (bytag[lhs] > bytag[rhs]) {
+			return (-1);
+		} else {
+			return (0);
+		}
+	});
+
+	var divisor;
+
+	if (etime === 0) {
+		divisor = nentities;
+	} else {
+		divisor = (etime - base) * nentities;
+	}
+
+	var x = g_statesel.x;
+	var y = g_statesel.y + 10;
+
+	var elem = g_svgDoc.getElementById('statemap-tagbox-select');
+
+	while (elem.childNodes.length > 0)
+		elem.removeChild(elem.childNodes[0]);
+
+	if (g_tagvalsel && g_tagvalsel.element)
+		g_tagvalsel.element = undefined;
+
+	var text = g_svgDoc.createElementNS(elem.namespaceURI, 'text');
+	text.classList.add('statemap-tagbox-select-header');
+	text.classList.add('sansserif');
+
+	text.appendChild(g_svgDoc.createTextNode(header));
+	text.setAttributeNS(null, 'x', x);
+	text.setAttributeNS(null, 'y', y);
+	elem.appendChild(text);
+	y += 9;
+
+	var line = g_svgDoc.createElementNS(elem.namespaceURI, 'line');
+	line.classList.add('statemap-tagbox-select-header-line');
+	line.x1.baseVal.value = x - 2;
+	line.y1.baseVal.value = y;
+	line.x2.baseVal.value = g_statesel.x2;
+	line.y2.baseVal.value = y;
+	elem.appendChild(line);
+	y += 18;
+
+	var bmargin = 60;
+	var ttl = 0;
+	var ellipsis = false;
+
+	var click = function (tv) {
+		return (function (evt) { stateselTagvalSelect(evt, tv); });
+	};
+
+	for (i = 0; i <= sorted.length; i++) {
+		var t, perc;
+
+		if (i < sorted.length) {
+			perc = (bytag[sorted[i]] / divisor) * 100.0;
+			tagval = sorted[i];
+			ttl += perc;
+
+			if (y > globals.totalHeight - bmargin) {
+				if (ellipsis)
+					continue;
+
+				ellipsis = true;
+				tagval = '...';
+			}
+		} else {
+			perc = ttl;
+			tagval = 'total';
+
+			y -= 5;
+			line = g_svgDoc.createElementNS(elem.namespaceURI,
+			    'line');
+			line.classList.add('statemap-tagbox-select-sum-line');
+			line.x1.baseVal.value = x - 2;
+			line.y1.baseVal.value = y;
+			line.x2.baseVal.value = g_statesel.x2;
+			line.y2.baseVal.value = y;
+			elem.appendChild(line);
+			y += 15;
+		}
+
+		if (i != sorted.length && ellipsis) {
+			t = '...';
+		} else {
+			t = Math.trunc(perc) + '.' +
+			    (Math.round(perc * 100) % 100) + '%';
+		}
+
+		text = g_svgDoc.createElementNS(elem.namespaceURI, 'text');
+		text.classList.add('statemap-tagbox-select-perc');
+		text.classList.add('sansserif');
+		text.appendChild(g_svgDoc.createTextNode(t));
+		text.setAttributeNS(null, 'x', x + 45);
+		text.setAttributeNS(null, 'y', y);
+		elem.appendChild(text);
+
+		text = g_svgDoc.createElementNS(elem.namespaceURI, 'text');
+		text.classList.add('statemap-tagbox-select');
+		text.classList.add('sansserif');
+		text.appendChild(g_svgDoc.createTextNode(tagval));
+		text.setAttributeNS(null, 'x', x + 50);
+		text.setAttributeNS(null, 'y', y);
+
+		/*
+		 * If we already have a tag value selection and it matches
+		 * what we're about to display, indicate as much by
+		 * highlighting it.
+		 */
+		if (g_tagvalsel && g_tagvalsel.tag == g_tagsel.tag &&
+		    g_tagvalsel.tagval == tagval) {
+			var highlight = 'statemap-tagbox-select-highlighted';
+			text.classList.add(highlight);
+			g_tagvalsel.element = text;
+		}
+
+		text.addEventListener('click', click(tagval));
+
+		elem.title = t;
+		elem.appendChild(text);
+		y += 15;
+	}
+};
+
+var stateselTagSelect = function (evt, tag)
+{
+	var elem, prefix = 'statemap-tagbox-tag-';
+
+	if (g_tagsel) {
+		elem = g_svgDoc.getElementById(prefix + g_tagsel.tag);
+		elem.classList.remove(prefix + 'highlighted');
+
+		if (g_tagsel.tag == tag) {
+			g_tagsel = undefined;
+			stateselUpdate();
+			return;
+		}
+	}
+
+	elem = g_svgDoc.getElementById(prefix + tag);
+	elem.classList.add(prefix + 'highlighted');
+	g_tagsel = { tag: tag };
+	stateselUpdate();
+};
+
+var stateselClearTagbox = function ()
+{
+	var tagbox = g_svgDoc.getElementById('statemap-tagbox'), elem;
+
+	if (!tagbox)
+		return;
+
+	while (tagbox.childNodes.length > 0)
+		tagbox.removeChild(tagbox.childNodes[0]);
+
+	elem = g_svgDoc.getElementById('statemap-tagbox-select');
+
+	while (elem.childNodes.length > 0)
+		elem.removeChild(elem.childNodes[0]);
+};
+
+var stateselSelect = function (statemap, state)
+{
+	var legend = g_svgDoc.getElementById('statemap-legend-' +
+	    g_statemaps[statemap].legend + '-' + state);
+	var states = g_statemaps[statemap].states;
+	var alltags = g_statemaps[statemap].tags;
+	var tags = {};
+	var i, t;
+	var lmargin = 20;
+	var offset = globals.lmargin + globals.pixelWidth;
+
+	legend.classList.add('statemap-legend-highlighted');
+	stateselClearTagbox();
+
+	t = 'tags for ' + states[state].name;
+
+	var tagbox = g_svgDoc.getElementById('statemap-tagbox');
+	var x = offset + lmargin;
+	var y = globals.tmargin;
+	var x2 = x + (globals.tagWidth - lmargin);
+
+	var text = g_svgDoc.createElementNS(tagbox.namespaceURI, 'text');
+	text.classList.add('statemap-tagbox-header');
+	text.classList.add('sansserif');
+
+	text.appendChild(g_svgDoc.createTextNode(t));
+	text.setAttributeNS(null, 'x', x);
+	text.setAttributeNS(null, 'y', y);
+	tagbox.appendChild(text);
+	y += 10;
+
+	var line = g_svgDoc.createElementNS(tagbox.namespaceURI, 'line');
+	line.classList.add('statemap-tagbox-header-line');
+	line.x1.baseVal.value = x - 2;
+	line.y1.baseVal.value = y;
+	line.x2.baseVal.value = x2;
+	line.y2.baseVal.value = y;
+	tagbox.appendChild(line);
+	y += 20;
+
+	/*
+	 * Now add text for each possible tag for this state.
+	 */
+	for (i = 0; i < alltags.length; i++) {
+		if (alltags[i].state !== state)
+			continue;
+
+		for (t in alltags[i]) {
+			if (t == 'state' || t == 'tag')
+				continue;
+
+			tags[t] = true;
+		}
+	}
+
+	tags = Object.keys(tags).sort();
+
+	var click = function (tag) {
+		return (function (evt) { stateselTagSelect(evt, tag); });
+	};
+
+	for (i = 0; i < tags.length; i++) {
+		text = g_svgDoc.createElementNS(tagbox.namespaceURI, 'text');
+		text.classList.add('statemap-tagbox-tag');
+		text.classList.add('sansserif');
+		text.id = 'statemap-tagbox-tag-' + tags[i];
+
+		text.appendChild(g_svgDoc.createTextNode(tags[i]));
+		text.setAttributeNS(null, 'x', x);
+		text.setAttributeNS(null, 'y', y);
+		text.addEventListener('click', click(tags[i]));
+
+		tagbox.appendChild(text);
+		y += 18;
+	}
+
+	g_statesel = { statemap: statemap, state: state, x: x, y: y, x2: x2 };
+	stateselUpdate();
+};
+
+var stateselClear = function ()
+{
+	var state, statemap, legend;
+
+	if (g_statesel == undefined)
+		return (-1);
+
+	state = g_statesel.state;
+	statemap = g_statesel.statemap;
+	legend = g_svgDoc.getElementById('statemap-legend-' +
+	    statemap + '-' + state);
+	legend.classList.remove('statemap-legend-highlighted');
+
+	stateselClearTagbox();
+	g_statesel = undefined;
+	g_tagsel = undefined;
+
+	return (state);
+};
+
+var statemapsUpdate = function ()
+{
+	var i;
+	var newMatrix = 'matrix(' +  g_transMatrix.join(' ') + ')';
+
+	for (i = 0; i < g_statemaps.length; i++) {
+		g_statemaps[i].elem.setAttributeNS(null,
+		    'transform', newMatrix);
+	}
+};
+
+/*
+ * All of the following *click() functions are added at the time of statemap
+ * generation.
+ */
+var legendclick = function (evt, statemap, state)
+{
+	if (globals.notags || stateselClear() == state)
+		return;
+
+	stateselSelect(statemap, state);
+	stateselUpdate();
+};
+
+var mapclick = function (evt, idx)
+{
+	var x = evt.clientX - g_offset;
+
+	if (evt.shiftKey || evt.altKey) {
+		if (!g_timebar || !g_timebar.bar)
+			return;
+
+		timebarRemoveSubbar(g_timebar);
+		timebarCreateSubbar(g_timebar, x, evt.clientY);
+		return;
+	}
+
+	timebarRemove(g_timebar);
+	g_timebar = timebarCreate(x);
+
+	statebarRemove(g_statebar);
+	g_statebar = statebarCreate(evt.target, idx);
+
+	stateselUpdate();
+};
+
+var panclick = function (dx, dy)
+{
+	var minX = -(g_width * g_transMatrix[0] - g_width);
+	var minY = -(g_height * g_transMatrix[0] - g_height);
+
+	g_transMatrix[4] += dx;
+	g_transMatrix[5] += dy;
+
+	timebarHide(g_timebar);
+
+	if (g_transMatrix[4] > 0)
+		g_transMatrix[4] = 0;
+
+	if (g_transMatrix[4] < minX)
+		g_transMatrix[4] = minX;
+
+	if (g_transMatrix[5] > 0)
+		g_transMatrix[5] = 0;
+
+	if (g_transMatrix[5] < minY)
+		g_transMatrix[5] = minY;
+
+	timeSetSpanLabel();
+	statemapsUpdate();
+	timebarShow(g_timebar);
+	stateselUpdate();
+};
+
+var zoomclick = function (scale)
+{
+	var i;
+
+	timebarHide(g_timebar);
+
+	for (i = 0; i < g_transMatrix.length; i++) {
+		/*
+		 * We don't scale the Y direction on a zoom.
+		 */
+		if (i != 3)
+			g_transMatrix[i] *= scale;
+	}
+
+	var minX = -(g_width * g_transMatrix[0] - g_width);
+	var minY = -(g_height * g_transMatrix[0] - g_height);
+
+	g_transMatrix[4] += (1 - scale) * g_width / 2;
+	timebarSetMiddle(g_timebar);
+
+	if (g_transMatrix[4] > 0)
+		g_transMatrix[4] = 0;
+
+	if (g_transMatrix[4] < minX)
+		g_transMatrix[4] = minX;
+
+	if (g_transMatrix[5] > 0)
+		g_transMatrix[5] = 0;
+
+	if (g_transMatrix[5] < minY)
+		g_transMatrix[5] = minY;
+
+	if (g_transMatrix[0] < 1)
+		g_transMatrix = [1, 0, 0, 1, 0, 0];
+
+	timeSetSpanLabel();
+	statemapsUpdate();
+	timebarShow(g_timebar);
+	stateselUpdate();
+};
+
+]]></script>
+<style type="text/css"><![CDATA[
+/*
+ * Copyright 2018, Joyent, Inc.
+ */
+
+.sansserif {
+	font-family: Verdana, Arial, Helvetica, sans-serif;
+}
+
+.button {
+        fill: #fff;
+}
+
+.statemap-border {
+	fill: none;
+	stroke: black;
+	stroke-width: 0.5;
+}
+
+.statemap-highlight {
+	fill:		blue;
+}
+
+.statemap-title {
+	font-size:	10pt;
+	font-weight:	bold;
+	text-anchor:	middle;
+	cursor:		default;
+}
+
+.statemap-timelabel {
+	font-size:	8pt;
+	text-anchor:	middle;
+	cursor:		default;
+}
+
+.statemap-timebar {
+	stroke:		blue;
+	fill:		blue;
+	stroke-width:	1px;
+}
+
+.statemap-timetext {
+	font-size:	8pt;
+	font-weight:	normal;
+	fill:		blue;
+	stroke:		blue;
+	stroke-width:	0px;
+	cursor:		default;
+}
+
+.statemap-timebreaktext {
+	font-size:	8pt;
+	font-weight:	bold;
+	fill:		blue;
+	stroke:		white;
+	stroke-width:	0.3px;
+	cursor:		default;
+}
+
+.statemap-subbar {
+	stroke:		blue;
+	fill:		blue;
+	stroke-width:	1px;
+	stroke-dasharray: 5.7;
+}
+
+.statemap-subbar-span {
+	stroke:		blue;
+	fill:		blue;
+	stroke-width:	0.75px;
+	stroke-dasharray: 1;
+}
+
+.statemap-subbar-text {
+	font-size:	8pt;
+	font-weight:	bold;
+	fill:		blue;
+	stroke:		white;
+	stroke-width:	0.3px;
+	cursor:		default;
+}
+
+.statemap-statebar {
+	stroke:		blue;
+	fill:		blue;
+	stroke-width:	1px;
+}
+
+.statemap-statetext {
+	font-size:	8pt;
+	font-weight:	normal;
+	fill:		blue;
+	stroke:		blue;
+	stroke-width:	0px;
+	cursor:		default;
+}
+
+.statemap-timeline {
+	stroke: black;
+	stroke-width:	0.5pt;
+	marker-start:	url(#startarrow);
+	marker-end:	url(#endarrow);
+}
+
+.statemap-legend {
+	stroke: black;
+	stroke-width:	0.5pt;
+}
+
+.statemap-legend-highlighted {
+	stroke:		blue;
+	stroke-width:	3pt;
+}
+
+.statemap-legendlabel {
+	font-size:	7pt;
+	text-anchor:	middle;
+	cursor:		default;
+}
+
+.statemap-tagbox {
+	stroke:		black;
+	stroke-width:	0.5pt;
+	alignment-baseline:	hanging;
+	text-anchor:	start;
+	cursor:		default;
+}
+
+.statemap-tagbox-header {
+	font-size:	9pt;
+	font-weight:	bold;
+	text-anchor:	start;
+	font-style:	oblique;
+	cursor:		default;
+}
+
+.statemap-tagbox-header-line {
+	stroke:		black;
+	stroke-width:	1pt;
+}
+
+.statemap-tagbox-tag {
+	font-size:	9pt;
+	cursor:		default;
+}
+
+.statemap-tagbox-tag-highlighted {
+	font-weight:	bold;
+}
+
+.statemap-tagbox-select-header {
+	font-size:	8pt;
+	text-anchor:	start;
+	font-style:	oblique;
+	cursor:		default;
+}
+
+.statemap-tagbox-select {
+	font-size:	8pt;
+	text-anchor:	start;
+	cursor:		default;
+}
+
+.statemap-tagbox-select-perc {
+	font-size:	8pt;
+	text-anchor:	end;
+	cursor:		default;
+}
+
+.statemap-tagbox-select-header-line {
+	stroke:		black;
+	stroke-width:	0.5pt;
+}
+
+.statemap-tagbox-select-sum-line {
+	stroke:		black;
+	stroke-width:	0.25pt;
+}
+
+.statemap-tagbox-select-highlighted {
+	font-weight:	bold;
+}
+
+]]></style>
+
+<!-- This file is pulled into the <defs> section !-->
+
+ <marker id="startarrow" markerWidth="10" markerHeight="7" 
+    refX="10" refY="3.5" orient="auto">
+      <polygon points="10 0, 10 7, 0 3.5" fill="black" />
+    </marker>
+    <marker id="endarrow" markerWidth="10" markerHeight="7" 
+    refX="0" refY="3.5" orient="auto" markerUnits="strokeWidth">
+        <polygon points="0 0, 10 3.5, 0 7" fill="black" />
+    </marker>
+
+
+</defs>
+<svg x="138px" y="60px" width="862px" height="30px">
+<rect x="0px" y="0px" width="862px" height="30px" fill="#f0f0f0" id="statemap-0-highlight" />
+<g id="statemap-0" transform="matrix(1 0 0 1 0 0)">
+<rect x="0" y="0" width="0.006215955279472975"
+                    height="10" style="fill:#f0f0f0" />
+<g id="statemap-entity-0-main"><title>Entity main</title>
+<rect x="0.006215955279472975" y="0" width="0.4093239329192095" height="10" onclick="mapclick(evt, 0)" style="fill:rgb(255, 0, 0)" />
+<rect x="0.015539888198682435" y="0" width="0.40282543421794226" height="10" onclick="mapclick(evt, 1)" style="fill:rgb(255, 255, 0)" />
+<rect x="0.018365322416624696" y="0" width="0.4033905210615307" height="10" onclick="mapclick(evt, 2)" style="fill:rgb(255, 0, 0)" />
+<rect x="0.021755843478155408" y="0" width="28.81977135288313" height="10" onclick="mapclick(evt, 3)" style="fill:rgb(255, 255, 0)" />
+<rect x="28.44152719636129" y="0" width="0.4148335296441969" height="10" onclick="mapclick(evt, 4)" style="fill:rgb(255, 0, 0)" />
+<rect x="28.456360726005485" y="0" width="14.894901353176492" height="10" onclick="mapclick(evt, 5)" style="fill:rgb(255, 255, 0)" />
+<rect x="42.95126207918197" y="0" width="0.4096064763410037" height="10" onclick="mapclick(evt, 6)" style="fill:rgb(255, 0, 0)" />
+<rect x="42.96086855552298" y="0" width="28.97827821250969" height="10" onclick="mapclick(evt, 7)" style="fill:rgb(255, 255, 0)" />
+<rect x="71.53914676803267" y="0" width="0.4059334118576788" height="10" onclick="mapclick(evt, 8)" style="fill:rgb(255, 0, 0)" />
+<rect x="71.54508017989035" y="0" width="14.676071472996862" height="10" onclick="mapclick(evt, 9)" style="fill:rgb(255, 255, 0)" />
+<rect x="85.82115165288721" y="0" width="0.41440971451150554" height="10" onclick="mapclick(evt, 10)" style="fill:rgb(255, 0, 0)" />
+<rect x="85.83556136739872" y="0" width="29.308854016008933" height="10" onclick="mapclick(evt, 11)" style="fill:rgb(255, 255, 0)" />
+<rect x="114.74441538340764" y="0" width="0.41045410660638637" height="10" onclick="mapclick(evt, 12)" style="fill:rgb(255, 0, 0)" />
+<rect x="114.75486949001403" y="0" width="14.539179185137561" height="10" onclick="mapclick(evt, 13)" style="fill:rgb(255, 255, 0)" />
+<rect x="128.8940486751516" y="0" width="0.4046619664596047" height="10" onclick="mapclick(evt, 14)" style="fill:rgb(255, 0, 0)" />
+<rect x="128.8987106416112" y="0" width="13.081537672101149" height="10" onclick="mapclick(evt, 15)" style="fill:rgb(255, 255, 0)" />
+<rect x="141.58024831371233" y="0" width="0.407487400677547" height="10" onclick="mapclick(evt, 16)" style="fill:rgb(255, 0, 0)" />
+<rect x="141.5877357143899" y="0" width="16.055872273328966" height="10" onclick="mapclick(evt, 17)" style="fill:rgb(255, 255, 0)" />
+<rect x="157.24360798771886" y="0" width="0.40706358554485567" height="10" onclick="mapclick(evt, 18)" style="fill:rgb(255, 0, 0)" />
+<rect x="157.25067157326373" y="0" width="13.44502978423942" height="10" onclick="mapclick(evt, 19)" style="fill:rgb(255, 255, 0)" />
+<rect x="170.29570135750313" y="0" width="0.41017156318459214" height="10" onclick="mapclick(evt, 20)" style="fill:rgb(255, 0, 0)" />
+<rect x="170.30587292068773" y="0" width="1.9702350666214117" height="10" onclick="mapclick(evt, 21)" style="fill:rgb(255, 255, 0)" />
+<rect x="171.87610798730915" y="0" width="0.4100302914736951" height="10" onclick="mapclick(evt, 22)" style="fill:rgb(255, 0, 0)" />
+<rect x="171.88613827878282" y="0" width="29.239772149380247" height="10" onclick="mapclick(evt, 23)" style="fill:rgb(255, 255, 0)" />
+<rect x="200.7259104281631" y="0" width="0.4135620842461229" height="10" onclick="mapclick(evt, 24)" style="fill:rgb(255, 0, 0)" />
+<rect x="200.7394725124092" y="0" width="14.584527404335535" height="10" onclick="mapclick(evt, 25)" style="fill:rgb(255, 255, 0)" />
+<rect x="214.92399991674475" y="0" width="0.4081937592320326" height="10" onclick="mapclick(evt, 26)" style="fill:rgb(255, 0, 0)" />
+<rect x="214.93219367597678" y="0" width="29.311538178515985" height="10" onclick="mapclick(evt, 27)" style="fill:rgb(255, 255, 0)" />
+<rect x="243.84373185449275" y="0" width="0.417517692151242" height="10" onclick="mapclick(evt, 28)" style="fill:rgb(255, 0, 0)" />
+<rect x="243.861249546644" y="0" width="14.53578866407603" height="10" onclick="mapclick(evt, 29)" style="fill:rgb(255, 255, 0)" />
+<rect x="257.99703821072006" y="0" width="0.4096064763410037" height="10" onclick="mapclick(evt, 30)" style="fill:rgb(255, 0, 0)" />
+<rect x="258.00664468706105" y="0" width="28.790810652149222" height="10" onclick="mapclick(evt, 31)" style="fill:rgb(255, 255, 0)" />
+<rect x="286.39745533921024" y="0" width="0.40988901976279796" height="10" onclick="mapclick(evt, 32)" style="fill:rgb(255, 0, 0)" />
+<rect x="286.40734435897303" y="0" width="14.662650660461637" height="10" onclick="mapclick(evt, 33)" style="fill:rgb(255, 255, 0)" />
+<rect x="300.6699950194347" y="0" width="0.40692231383395855" height="10" onclick="mapclick(evt, 34)" style="fill:rgb(255, 0, 0)" />
+<rect x="300.67691733326865" y="0" width="11.765874228516335" height="10" onclick="mapclick(evt, 35)" style="fill:rgb(255, 255, 0)" />
+<rect x="312.042791561785" y="0" width="0.4105953783172835" height="10" onclick="mapclick(evt, 36)" style="fill:rgb(255, 0, 0)" />
+<rect x="312.05338694010226" y="0" width="17.797893740401268" height="10" onclick="mapclick(evt, 37)" style="fill:rgb(255, 255, 0)" />
+<rect x="329.45128068050354" y="0" width="0.40890011778651814" height="10" onclick="mapclick(evt, 38)" style="fill:rgb(255, 0, 0)" />
+<rect x="329.46018079829" y="0" width="11.598608522814152" height="10" onclick="mapclick(evt, 39)" style="fill:rgb(255, 255, 0)" />
+<rect x="340.6587893211042" y="0" width="0.40452069474870767" height="10" onclick="mapclick(evt, 40)" style="fill:rgb(255, 0, 0)" />
+<rect x="340.6633100158529" y="0" width="3.8621458189555495" height="10" onclick="mapclick(evt, 41)" style="fill:rgb(255, 255, 0)" />
+<rect x="344.12545583480846" y="0" width="0.40692231383395855" height="10" onclick="mapclick(evt, 42)" style="fill:rgb(255, 0, 0)" />
+<rect x="344.13237814864243" y="0" width="29.172809358415012" height="10" onclick="mapclick(evt, 43)" style="fill:rgb(255, 255, 0)" />
+<rect x="372.9051875070574" y="0" width="0.4100302914736951" height="10" onclick="mapclick(evt, 44)" style="fill:rgb(255, 0, 0)" />
+<rect x="372.9152177985311" y="0" width="14.682711243409027" height="10" onclick="mapclick(evt, 45)" style="fill:rgb(255, 255, 0)" />
+<rect x="387.19792904194014" y="0" width="0.41116046516087196" height="10" onclick="mapclick(evt, 46)" style="fill:rgb(255, 0, 0)" />
+<rect x="387.20908950710106" y="0" width="28.759730875751856" height="10" onclick="mapclick(evt, 47)" style="fill:rgb(255, 255, 0)" />
+<rect x="415.5688203828529" y="0" width="0.41031283489548925" height="10" onclick="mapclick(evt, 48)" style="fill:rgb(255, 0, 0)" />
+<rect x="415.5791332177484" y="0" width="14.562489017435585" height="10" onclick="mapclick(evt, 49)" style="fill:rgb(255, 255, 0)" />
+<rect x="429.74162223518397" y="0" width="0.40579214014678167" height="10" onclick="mapclick(evt, 50)" style="fill:rgb(255, 0, 0)" />
+<rect x="429.7474143753308" y="0" width="28.880376916857994" height="10" onclick="mapclick(evt, 51)" style="fill:rgb(255, 255, 0)" />
+<rect x="458.2277912921887" y="0" width="0.4066397704121643" height="10" onclick="mapclick(evt, 52)" style="fill:rgb(255, 0, 0)" />
+<rect x="458.2344310626009" y="0" width="14.929795465768077" height="10" onclick="mapclick(evt, 53)" style="fill:rgb(255, 255, 0)" />
+<rect x="472.76422652836897" y="0" width="0.4096064763410037" height="10" onclick="mapclick(evt, 54)" style="fill:rgb(255, 0, 0)" />
+<rect x="472.77383300471" y="0" width="10.266416289054376" height="10" onclick="mapclick(evt, 55)" style="fill:rgb(255, 255, 0)" />
+<rect x="482.6402492937644" y="0" width="0.41031283489548925" height="10" onclick="mapclick(evt, 56)" style="fill:rgb(255, 0, 0)" />
+<rect x="482.65056212865983" y="0" width="19.27065132650367" height="10" onclick="mapclick(evt, 57)" style="fill:rgb(255, 255, 0)" />
+<rect x="501.5212134551635" y="0" width="0.40706358554485567" height="10" onclick="mapclick(evt, 58)" style="fill:rgb(255, 0, 0)" />
+<rect x="501.5282770407084" y="0" width="10.393560828861778" height="10" onclick="mapclick(evt, 59)" style="fill:rgb(255, 255, 0)" />
+<rect x="511.5218378695702" y="0" width="0.41017156318459214" height="10" onclick="mapclick(evt, 60)" style="fill:rgb(255, 0, 0)" />
+<rect x="511.5320094327547" y="0" width="4.6240241558236805" height="10" onclick="mapclick(evt, 61)" style="fill:rgb(255, 255, 0)" />
+<rect x="515.7560335885785" y="0" width="0.41017156318459214" height="10" onclick="mapclick(evt, 62)" style="fill:rgb(255, 0, 0)" />
+<rect x="515.7662051517631" y="0" width="29.16673467484644" height="10" onclick="mapclick(evt, 63)" style="fill:rgb(255, 255, 0)" />
+<rect x="544.5329398266094" y="0" width="0.41186682371535754" height="10" onclick="mapclick(evt, 64)" style="fill:rgb(255, 0, 0)" />
+<rect x="544.5448066503249" y="0" width="14.696979686209636" height="10" onclick="mapclick(evt, 65)" style="fill:rgb(255, 255, 0)" />
+<rect x="558.8417863365345" y="0" width="0.4100302914736951" height="10" onclick="mapclick(evt, 66)" style="fill:rgb(255, 0, 0)" />
+<rect x="558.8518166280081" y="0" width="29.384716924760685" height="10" onclick="mapclick(evt, 67)" style="fill:rgb(255, 255, 0)" />
+<rect x="587.8365335527689" y="0" width="0.4168113335967565" height="10" onclick="mapclick(evt, 68)" style="fill:rgb(255, 0, 0)" />
+<rect x="587.8533448863656" y="0" width="14.750662936350539" height="10" onclick="mapclick(evt, 69)" style="fill:rgb(255, 255, 0)" />
+<rect x="602.2040078227161" y="0" width="0.41017156318459214" height="10" onclick="mapclick(evt, 70)" style="fill:rgb(255, 0, 0)" />
+<rect x="602.2141793859007" y="0" width="29.066573031820386" height="10" onclick="mapclick(evt, 71)" style="fill:rgb(255, 255, 0)" />
+<rect x="630.8807524177212" y="0" width="0.4066397704121643" height="10" onclick="mapclick(evt, 72)" style="fill:rgb(255, 0, 0)" />
+<rect x="630.8873921881333" y="0" width="14.829492551031127" height="10" onclick="mapclick(evt, 73)" style="fill:rgb(255, 255, 0)" />
+<rect x="645.3168847391645" y="0" width="0.40762867238844414" height="10" onclick="mapclick(evt, 74)" style="fill:rgb(255, 0, 0)" />
+<rect x="645.3245134115529" y="0" width="8.225746425145578" height="10" onclick="mapclick(evt, 75)" style="fill:rgb(255, 255, 0)" />
+<rect x="653.1502598366984" y="0" width="0.41031283489548925" height="10" onclick="mapclick(evt, 76)" style="fill:rgb(255, 0, 0)" />
+<rect x="653.160572671594" y="0" width="21.285892282450988" height="10" onclick="mapclick(evt, 77)" style="fill:rgb(255, 255, 0)" />
+<rect x="674.0464649540448" y="0" width="0.4053683250140903" height="10" onclick="mapclick(evt, 78)" style="fill:rgb(255, 0, 0)" />
+<rect x="674.051833279059" y="0" width="7.841204828083636" height="10" onclick="mapclick(evt, 79)" style="fill:rgb(255, 255, 0)" />
+<rect x="681.4930381071426" y="0" width="0.4053683250140903" height="10" onclick="mapclick(evt, 80)" style="fill:rgb(255, 0, 0)" />
+<rect x="681.4984064321568" y="0" width="7.698802943499347" height="10" onclick="mapclick(evt, 81)" style="fill:rgb(255, 255, 0)" />
+<rect x="688.797209375656" y="0" width="0.4100302914736951" height="10" onclick="mapclick(evt, 82)" style="fill:rgb(255, 0, 0)" />
+<rect x="688.8072396671297" y="0" width="29.300518985066006" height="10" onclick="mapclick(evt, 83)" style="fill:rgb(255, 255, 0)" />
+<rect x="717.7077586521958" y="0" width="0.4072048572557528" height="10" onclick="mapclick(evt, 84)" style="fill:rgb(255, 0, 0)" />
+<rect x="717.7149635094515" y="0" width="14.588059197107963" height="10" onclick="mapclick(evt, 85)" style="fill:rgb(255, 255, 0)" />
+<rect x="731.9030227065595" y="0" width="0.41101919344997484" height="10" onclick="mapclick(evt, 86)" style="fill:rgb(255, 0, 0)" />
+<rect x="731.9140419000095" y="0" width="28.763686483656976" height="10" onclick="mapclick(evt, 87)" style="fill:rgb(255, 255, 0)" />
+<rect x="760.2777283836664" y="0" width="0.407487400677547" height="10" onclick="mapclick(evt, 88)" style="fill:rgb(255, 0, 0)" />
+<rect x="760.285215784344" y="0" width="15.022045892983893" height="10" onclick="mapclick(evt, 89)" style="fill:rgb(255, 255, 0)" />
+<rect x="774.9072616773278" y="0" width="0.41794150728393337" height="10" onclick="mapclick(evt, 90)" style="fill:rgb(255, 0, 0)" />
+<rect x="774.9252031846117" y="0" width="29.244151572418055" height="10" onclick="mapclick(evt, 91)" style="fill:rgb(255, 255, 0)" />
+<rect x="803.7693547570299" y="0" width="0.4100302914736951" height="10" onclick="mapclick(evt, 92)" style="fill:rgb(255, 0, 0)" />
+<rect x="803.7793850485035" y="0" width="15.230845481689826" height="10" onclick="mapclick(evt, 93)" style="fill:rgb(255, 255, 0)" />
+<rect x="818.6102305301935" y="0" width="0.4107366500281806" height="10" onclick="mapclick(evt, 94)" style="fill:rgb(255, 0, 0)" />
+<rect x="818.6209671802216" y="0" width="4.729412852152927" height="10" onclick="mapclick(evt, 95)" style="fill:rgb(255, 255, 0)" />
+<rect x="822.9503800323745" y="0" width="0.4080524875211355" height="10" onclick="mapclick(evt, 96)" style="fill:rgb(255, 0, 0)" />
+<rect x="822.9584325198956" y="0" width="24.90852276498566" height="10" onclick="mapclick(evt, 97)" style="fill:rgb(255, 255, 0)" />
+<rect x="847.4669552848812" y="0" width="0.40550959672498743" height="10" onclick="mapclick(evt, 98)" style="fill:rgb(255, 0, 0)" />
+<rect x="847.4724648816062" y="0" width="14.927535118393724" height="10" onclick="mapclick(evt, 99)" style="fill:rgb(255, 255, 0)" />
+</g>
+<g id="statemap-entity-0-thread0"><title>Entity thread0</title>
+<rect x="0" y="10" width="141.97586889067455" height="10" onclick="mapclick(evt, 0)" style="fill:rgb(255, 165, 0)" />
+<rect x="141.57586889067454" y="10" width="29.112768881283746" height="10" onclick="mapclick(evt, 1)" style="fill:rgb(0, 0, 255)" />
+<rect x="170.28863777195826" y="10" width="142.14624257401647" height="10" onclick="mapclick(evt, 2)" style="fill:rgb(255, 165, 0)" />
+<rect x="312.0348803459748" y="10" width="29.01995336722434" height="10" onclick="mapclick(evt, 3)" style="fill:rgb(0, 0, 255)" />
+<rect x="340.6548337131991" y="10" width="142.36733280157046" height="10" onclick="mapclick(evt, 4)" style="fill:rgb(255, 165, 0)" />
+<rect x="482.62216651476956" y="10" width="29.29345539952115" height="10" onclick="mapclick(evt, 5)" style="fill:rgb(0, 0, 255)" />
+<rect x="511.5156219142907" y="10" width="142.02828069541738" height="10" onclick="mapclick(evt, 6)" style="fill:rgb(255, 165, 0)" />
+<rect x="653.143902609708" y="10" width="28.743202085576897" height="10" onclick="mapclick(evt, 7)" style="fill:rgb(0, 0, 255)" />
+<rect x="681.4871046952849" y="10" width="141.85875464234084" height="10" onclick="mapclick(evt, 8)" style="fill:rgb(255, 165, 0)" />
+</g>
+<rect x="823.3458593376257" y="10" width="38.65414066237429"
+                    height="10" style="fill:#f0f0f0" />
+<rect x="0" y="20" width="0.006357226990370088"
+                    height="10" style="fill:#f0f0f0" />
+<g id="statemap-entity-0-thread1"><title>Entity thread1</title>
+<rect x="0.006357226990370088" y="20" width="28.82160788512479" height="10" onclick="mapclick(evt, 0)" style="fill:rgb(0, 0, 255)" />
+<rect x="28.42796511211516" y="20" width="14.919341359161693" height="10" onclick="mapclick(evt, 1)" style="fill:rgb(0, 128, 0)" />
+<rect x="42.94730647127685" y="20" width="28.984776711210962" height="10" onclick="mapclick(evt, 2)" style="fill:rgb(0, 0, 255)" />
+<rect x="71.53208318248781" y="20" width="14.676919103262247" height="10" onclick="mapclick(evt, 3)" style="fill:rgb(0, 128, 0)" />
+<rect x="85.80900228575005" y="20" width="29.32439390420762" height="10" onclick="mapclick(evt, 4)" style="fill:rgb(0, 0, 255)" />
+<rect x="114.73339618995769" y="20" width="14.556273062156112" height="10" onclick="mapclick(evt, 5)" style="fill:rgb(0, 128, 0)" />
+<rect x="128.8896692521138" y="20" width="28.74842913888009" height="10" onclick="mapclick(evt, 6)" style="fill:rgb(0, 0, 255)" />
+<rect x="157.23809839099388" y="20" width="15.028826935106954" height="10" onclick="mapclick(evt, 7)" style="fill:rgb(0, 128, 0)" />
+<rect x="171.86692532610084" y="20" width="29.24471665926165" height="10" onclick="mapclick(evt, 8)" style="fill:rgb(0, 0, 255)" />
+<rect x="200.7116419853625" y="20" width="14.605435617548308" height="10" onclick="mapclick(evt, 9)" style="fill:rgb(0, 128, 0)" />
+<rect x="214.91707760291078" y="20" width="29.317189046951867" height="10" onclick="mapclick(evt, 10)" style="fill:rgb(0, 0, 255)" />
+<rect x="243.83426664986268" y="20" width="14.554436529914447" height="10" onclick="mapclick(evt, 11)" style="fill:rgb(0, 128, 0)" />
+<rect x="257.9887031797771" y="20" width="28.801829845599197" height="10" onclick="mapclick(evt, 12)" style="fill:rgb(0, 0, 255)" />
+<rect x="286.3905330253763" y="20" width="14.67324603877892" height="10" onclick="mapclick(evt, 13)" style="fill:rgb(0, 128, 0)" />
+<rect x="300.6637790641552" y="20" width="29.181285661068845" height="10" onclick="mapclick(evt, 14)" style="fill:rgb(0, 0, 255)" />
+<rect x="329.4450647252241" y="20" width="15.076294229968383" height="10" onclick="mapclick(evt, 15)" style="fill:rgb(0, 128, 0)" />
+<rect x="344.1213589551924" y="20" width="29.173515716969504" height="10" onclick="mapclick(evt, 16)" style="fill:rgb(0, 0, 255)" />
+<rect x="372.89487467216196" y="20" width="14.697686044764122" height="10" onclick="mapclick(evt, 17)" style="fill:rgb(0, 128, 0)" />
+<rect x="387.19256071692604" y="20" width="28.769337352092858" height="10" onclick="mapclick(evt, 18)" style="fill:rgb(0, 0, 255)" />
+<rect x="415.5618980690189" y="20" width="14.576051101681708" height="10" onclick="mapclick(evt, 19)" style="fill:rgb(0, 128, 0)" />
+<rect x="429.7379491707007" y="20" width="28.882778535943242" height="10" onclick="mapclick(evt, 20)" style="fill:rgb(0, 0, 255)" />
+<rect x="458.2207277066439" y="20" width="14.936435236180243" height="10" onclick="mapclick(evt, 21)" style="fill:rgb(0, 128, 0)" />
+<rect x="472.75716294282415" y="20" width="29.15783455705992" height="10" onclick="mapclick(evt, 22)" style="fill:rgb(0, 0, 255)" />
+<rect x="501.51499749988403" y="20" width="14.63368995972773" height="10" onclick="mapclick(evt, 23)" style="fill:rgb(0, 128, 0)" />
+<rect x="515.7486874596118" y="20" width="29.175210977500267" height="10" onclick="mapclick(evt, 24)" style="fill:rgb(0, 0, 255)" />
+<rect x="544.523898437112" y="20" width="14.709129053346789" height="10" onclick="mapclick(evt, 25)" style="fill:rgb(0, 128, 0)" />
+<rect x="558.8330274904588" y="20" width="29.395029759656172" height="10" onclick="mapclick(evt, 26)" style="fill:rgb(0, 0, 255)" />
+<rect x="587.828057250115" y="20" width="14.768886987056264" height="10" onclick="mapclick(evt, 27)" style="fill:rgb(0, 128, 0)" />
+<rect x="602.1969442371712" y="20" width="29.076038236450493" height="10" onclick="mapclick(evt, 28)" style="fill:rgb(0, 0, 255)" />
+<rect x="630.8729824736218" y="20" width="14.838251397106749" height="10" onclick="mapclick(evt, 29)" style="fill:rgb(0, 128, 0)" />
+<rect x="645.3112338707284" y="20" width="29.131416747122163" height="10" onclick="mapclick(evt, 30)" style="fill:rgb(0, 0, 255)" />
+<rect x="674.0426506178507" y="20" width="15.142409390668233" height="10" onclick="mapclick(evt, 31)" style="fill:rgb(0, 128, 0)" />
+<rect x="688.7850600085188" y="20" width="29.316058873264687" height="10" onclick="mapclick(evt, 32)" style="fill:rgb(0, 0, 255)" />
+<rect x="717.7011188817836" y="20" width="14.594275152387434" height="10" onclick="mapclick(evt, 33)" style="fill:rgb(0, 128, 0)" />
+<rect x="731.895394034171" y="20" width="28.777107296192202" height="10" onclick="mapclick(evt, 34)" style="fill:rgb(0, 0, 255)" />
+<rect x="760.2725013303633" y="20" width="15.027838033130674" height="10" onclick="mapclick(evt, 35)" style="fill:rgb(0, 128, 0)" />
+<rect x="774.9003393634939" y="20" width="29.26096290601481" height="10" onclick="mapclick(evt, 36)" style="fill:rgb(0, 0, 255)" />
+<rect x="803.7613022695087" y="20" width="15.241582131718008" height="10" onclick="mapclick(evt, 37)" style="fill:rgb(0, 128, 0)" />
+<rect x="818.6028844012267" y="20" width="29.260256547460326" height="10" onclick="mapclick(evt, 38)" style="fill:rgb(0, 0, 255)" />
+</g>
+<rect x="847.863140948687" y="20" width="14.136859051312967"
+                    height="10" style="fill:#f0f0f0" />
+</g>
+<defs>
+<script type="application/ecmascript"><![CDATA[
+g_statemaps[0] = {
+  "offset": 0,
+  "states": [
+    {
+      "name": "receiving",
+      "value": 0,
+      "color": "red"
+    },
+    {
+      "name": "slow",
+      "value": 1,
+      "color": "orange"
+    },
+    {
+      "name": "waiting",
+      "value": 2,
+      "color": "yellow"
+    },
+    {
+      "name": "faster",
+      "value": 3,
+      "color": "blue"
+    },
+    {
+      "name": "fastest",
+      "value": 4,
+      "color": "green"
+    },
+    {
+      "name": "creating statemap",
+      "value": 5,
+      "color": null
+    }
+  ],
+  "entityKind": "Entity",
+  "title": "demo statemap on localhost",
+"data": { 
+"thread1": [
+{ "t": 45000, "s": 3},
+{ "t": 201229000, "s": 4},
+{ "t": 304005000, "s": 3},
+{ "t": 506344000, "s": 4},
+{ "t": 607404000, "s": 3},
+{ "t": 812147000, "s": 4},
+{ "t": 912353000, "s": 3},
+{ "t": 1113019000, "s": 4},
+{ "t": 1216570000, "s": 3},
+{ "t": 1420749000, "s": 4},
+{ "t": 1521303000, "s": 3},
+{ "t": 1725995000, "s": 4},
+{ "t": 1826188000, "s": 3},
+{ "t": 2027232000, "s": 4},
+{ "t": 2128266000, "s": 3},
+{ "t": 2331996000, "s": 4},
+{ "t": 2435883000, "s": 3},
+{ "t": 2639558000, "s": 4},
+{ "t": 2740765000, "s": 3},
+{ "t": 2941579000, "s": 4},
+{ "t": 3041925000, "s": 3},
+{ "t": 3243542000, "s": 4},
+{ "t": 3346439000, "s": 3},
+{ "t": 3550003000, "s": 4},
+{ "t": 3650757000, "s": 3},
+{ "t": 3854444000, "s": 4},
+{ "t": 3955732000, "s": 3},
+{ "t": 4160975000, "s": 4},
+{ "t": 4262686000, "s": 3},
+{ "t": 4465671000, "s": 4},
+{ "t": 4567873000, "s": 3},
+{ "t": 4771250000, "s": 4},
+{ "t": 4875605000, "s": 3},
+{ "t": 5080289000, "s": 4},
+{ "t": 5180764000, "s": 3},
+{ "t": 5381633000, "s": 4},
+{ "t": 5485177000, "s": 3},
+{ "t": 5689471000, "s": 4},
+{ "t": 5794528000, "s": 3}
+]
+,"thread0": [
+{ "t": 0, "s": 1},
+{ "t": 1002153000, "s": 3},
+{ "t": 1205398000, "s": 1},
+{ "t": 2208757000, "s": 3},
+{ "t": 2411345000, "s": 1},
+{ "t": 3416269000, "s": 3},
+{ "t": 3620793000, "s": 1},
+{ "t": 4623317000, "s": 3},
+{ "t": 4823946000, "s": 1}
+]
+,"main": [
+{ "t": 44000, "s": 0},
+{ "t": 110000, "s": 2},
+{ "t": 130000, "s": 0},
+{ "t": 154000, "s": 2},
+{ "t": 201325000, "s": 0},
+{ "t": 201430000, "s": 2},
+{ "t": 304033000, "s": 0},
+{ "t": 304101000, "s": 2},
+{ "t": 506394000, "s": 0},
+{ "t": 506436000, "s": 2},
+{ "t": 607490000, "s": 0},
+{ "t": 607592000, "s": 2},
+{ "t": 812225000, "s": 0},
+{ "t": 812299000, "s": 2},
+{ "t": 912384000, "s": 0},
+{ "t": 912417000, "s": 2},
+{ "t": 1002184000, "s": 0},
+{ "t": 1002237000, "s": 2},
+{ "t": 1113058000, "s": 0},
+{ "t": 1113108000, "s": 2},
+{ "t": 1205448000, "s": 0},
+{ "t": 1205520000, "s": 2},
+{ "t": 1216635000, "s": 0},
+{ "t": 1216706000, "s": 2},
+{ "t": 1420850000, "s": 0},
+{ "t": 1420946000, "s": 2},
+{ "t": 1521352000, "s": 0},
+{ "t": 1521410000, "s": 2},
+{ "t": 1726062000, "s": 0},
+{ "t": 1726186000, "s": 2},
+{ "t": 1826247000, "s": 0},
+{ "t": 1826315000, "s": 2},
+{ "t": 2027281000, "s": 0},
+{ "t": 2027351000, "s": 2},
+{ "t": 2128310000, "s": 0},
+{ "t": 2128359000, "s": 2},
+{ "t": 2208813000, "s": 0},
+{ "t": 2208888000, "s": 2},
+{ "t": 2332040000, "s": 0},
+{ "t": 2332103000, "s": 2},
+{ "t": 2411373000, "s": 0},
+{ "t": 2411405000, "s": 2},
+{ "t": 2435912000, "s": 0},
+{ "t": 2435961000, "s": 2},
+{ "t": 2639631000, "s": 0},
+{ "t": 2639702000, "s": 2},
+{ "t": 2740803000, "s": 0},
+{ "t": 2740882000, "s": 2},
+{ "t": 2941628000, "s": 0},
+{ "t": 2941701000, "s": 2},
+{ "t": 3041951000, "s": 0},
+{ "t": 3041992000, "s": 2},
+{ "t": 3243592000, "s": 0},
+{ "t": 3243639000, "s": 2},
+{ "t": 3346489000, "s": 0},
+{ "t": 3346557000, "s": 2},
+{ "t": 3416397000, "s": 0},
+{ "t": 3416470000, "s": 2},
+{ "t": 3550047000, "s": 0},
+{ "t": 3550097000, "s": 2},
+{ "t": 3620837000, "s": 0},
+{ "t": 3620909000, "s": 2},
+{ "t": 3650809000, "s": 0},
+{ "t": 3650881000, "s": 2},
+{ "t": 3854508000, "s": 0},
+{ "t": 3854592000, "s": 2},
+{ "t": 3955794000, "s": 0},
+{ "t": 3955865000, "s": 2},
+{ "t": 4161035000, "s": 0},
+{ "t": 4161154000, "s": 2},
+{ "t": 4262736000, "s": 0},
+{ "t": 4262808000, "s": 2},
+{ "t": 4465726000, "s": 0},
+{ "t": 4465773000, "s": 2},
+{ "t": 4567913000, "s": 0},
+{ "t": 4567967000, "s": 2},
+{ "t": 4623362000, "s": 0},
+{ "t": 4623435000, "s": 2},
+{ "t": 4771277000, "s": 0},
+{ "t": 4771315000, "s": 2},
+{ "t": 4823988000, "s": 0},
+{ "t": 4824026000, "s": 2},
+{ "t": 4875691000, "s": 0},
+{ "t": 4875762000, "s": 2},
+{ "t": 5080336000, "s": 0},
+{ "t": 5080387000, "s": 2},
+{ "t": 5180818000, "s": 0},
+{ "t": 5180896000, "s": 2},
+{ "t": 5381670000, "s": 0},
+{ "t": 5381723000, "s": 2},
+{ "t": 5485226000, "s": 0},
+{ "t": 5485353000, "s": 2},
+{ "t": 5689528000, "s": 0},
+{ "t": 5689599000, "s": 2},
+{ "t": 5794580000, "s": 0},
+{ "t": 5794656000, "s": 2},
+{ "t": 5825302000, "s": 0},
+{ "t": 5825359000, "s": 2},
+{ "t": 5998844000, "s": 0},
+{ "t": 5998883000, "s": 2}
+]
+},
+entities: {
+     "main": {  }
+    , "thread1": {  }
+    , "thread0": {  }
+}
+} ]]></script></defs>
+</svg>
+<polygon class="statemap-border"
+  points="138 60, 1000 60, 1000 90, 138 90"/>
+<text x="569" y="16" class="statemap-title sansserif">demo statemap</text>
+<text x="569" y="34" class="statemap-timelabel sansserif" id="statemap-timelabel"></text>
+<line x1="148" y1="40" x2="990" y2="40"
+class="statemap-timeline" />
+<svg x="20px" y="60px" width="88px" height="45px">
+<svg x="0px" y="0px" width="22px" height="22px"
+                    onclick="panclick(50, 0)"><rect x="0px" y="0px" width="22px" 
+                    height="22px" onclick="panclick(50, 0)" class="button" /><svg viewBox="0 0 16 16">
+<path d="M10.25,12.75c0.191,0,0.384-0.072,0.529-0.219c0.294-0.295,0.294-0.77,0-1.062L7.311,8l3.469-3.469
+	c0.294-0.293,0.294-0.768,0-1.062c-0.293-0.293-0.768-0.293-1.061,0l-4,4c-0.293,0.293-0.293,0.768,0,1.062l4,4
+	C9.866,12.678,10.059,12.75,10.25,12.75z"/>
+</svg>
+</svg>
+<svg x="22px" y="0px" width="22px" height="22px"
+                    onclick="zoomclick(1.25)"><rect x="0px" y="0px" width="22px" 
+                    height="22px" onclick="zoomclick(1.25)" class="button" /><svg viewBox="0 0 16 16">
+<path d="M10.251,6.989c0,0.276-0.225,0.5-0.5,0.5h-1.5v1.5c0,0.275-0.224,0.5-0.5,0.5s-0.5-0.225-0.5-0.5v-1.5h-1.5
+	c-0.276,0-0.5-0.224-0.5-0.5s0.224-0.5,0.5-0.5h1.5v-1.5c0-0.276,0.224-0.5,0.5-0.5s0.5,0.224,0.5,0.5v1.5h1.5
+	C10.026,6.489,10.251,6.713,10.251,6.989z M14.771,14.857c-0.273,0.226-0.685,0.179-0.918-0.104l-2.854-3.332
+	c-0.911,0.669-2.031,1.068-3.247,1.068c-3.037,0-5.5-2.463-5.5-5.5s2.463-5.5,5.5-5.5s5.5,2.463,5.5,5.5
+	c0,1.357-0.494,2.598-1.31,3.558l2.901,3.387C15.077,14.218,15.046,14.632,14.771,14.857z M7.751,11.489c2.481,0,4.5-2.019,4.5-4.5
+	s-2.019-4.5-4.5-4.5s-4.5,2.019-4.5,4.5S5.27,11.489,7.751,11.489z"/>
+</svg>
+</svg>
+<svg x="44px" y="0px" width="22px" height="22px"
+                    onclick="zoomclick(0.8)"><rect x="0px" y="0px" width="22px" 
+                    height="22px" onclick="zoomclick(0.8)" class="button" /><svg viewBox="0 0 16 16">
+<path d="M10.251,6.989c0,0.276-0.225,0.5-0.5,0.5h-4c-0.276,0-0.5-0.224-0.5-0.5l0,0c0-0.276,0.224-0.5,0.5-0.5h4
+	C10.026,6.489,10.251,6.713,10.251,6.989L10.251,6.989z M14.771,14.857c-0.273,0.226-0.685,0.179-0.918-0.104l-2.854-3.332
+	c-0.911,0.669-2.031,1.068-3.247,1.068c-3.037,0-5.5-2.463-5.5-5.5s2.463-5.5,5.5-5.5s5.5,2.463,5.5,5.5
+	c0,1.357-0.494,2.598-1.31,3.558l2.901,3.387C15.077,14.218,15.046,14.632,14.771,14.857z M7.751,11.489c2.481,0,4.5-2.019,4.5-4.5
+	s-2.019-4.5-4.5-4.5s-4.5,2.019-4.5,4.5S5.27,11.489,7.751,11.489z"/>
+</svg>
+</svg>
+<svg x="66px" y="0px" width="22px" height="22px"
+                    onclick="panclick(-50, 0)"><rect x="0px" y="0px" width="22px" 
+                    height="22px" onclick="panclick(-50, 0)" class="button" /><svg viewBox="0 0 16 16">
+<path d="M6.249,12.75c-0.191,0-0.384-0.072-0.529-0.219c-0.294-0.295-0.294-0.77,0-1.062L9.188,8L5.72,4.531
+	c-0.294-0.293-0.294-0.768,0-1.062c0.293-0.293,0.768-0.293,1.061,0l4,4c0.293,0.293,0.293,0.768,0,1.062l-4,4
+	C6.633,12.678,6.44,12.75,6.249,12.75z"/>
+</svg>
+</svg>
+</svg>
+<rect x="20" y="105" width="88" height="15" id="statemap-legend-0-0" onclick="legendclick(evt, 0, 0)" class="statemap-legend" style="fill:rgb(255, 0, 0)" />
+<text x="64" y="130" class="statemap-legendlabel sansserif">receiving</text>
+<rect x="20" y="140" width="88" height="15" id="statemap-legend-0-1" onclick="legendclick(evt, 0, 1)" class="statemap-legend" style="fill:rgb(255, 165, 0)" />
+<text x="64" y="165" class="statemap-legendlabel sansserif">slow</text>
+<rect x="20" y="175" width="88" height="15" id="statemap-legend-0-2" onclick="legendclick(evt, 0, 2)" class="statemap-legend" style="fill:rgb(255, 255, 0)" />
+<text x="64" y="200" class="statemap-legendlabel sansserif">waiting</text>
+<rect x="20" y="210" width="88" height="15" id="statemap-legend-0-3" onclick="legendclick(evt, 0, 3)" class="statemap-legend" style="fill:rgb(0, 0, 255)" />
+<text x="64" y="235" class="statemap-legendlabel sansserif">faster</text>
+<rect x="20" y="245" width="88" height="15" id="statemap-legend-0-4" onclick="legendclick(evt, 0, 4)" class="statemap-legend" style="fill:rgb(0, 128, 0)" />
+<text x="64" y="270" class="statemap-legendlabel sansserif">fastest</text>
+<rect x="20" y="280" width="88" height="15" id="statemap-legend-0-5" onclick="legendclick(evt, 0, 5)" class="statemap-legend" style="fill:rgb(47, 249, 132)" />
+<text x="64" y="305" class="statemap-legendlabel sansserif">creating statemap</text>
+<g id="statemap-tagbox"></g>
+<g id="statemap-tagbox-select"></g>
+</svg>

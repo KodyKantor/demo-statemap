@@ -1,0 +1,9 @@
+[package]
+name = "demo-statemap"
+version = "0.1.0"
+authors = ["Kody A Kantor <kody@kkantor.com>"]
+edition = "2018"
+
+[dependencies]
+statemap = { git = "https://github.com/kodykantor/rust-statemap" }
+chrono = "0.4"
